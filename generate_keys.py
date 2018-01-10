@@ -1,54 +1,84 @@
-import urllib, json, requests, sys, boto3
+#!/usr/bin/env python
+import os
+import sys
+import boto3
+import json
+import requests
+import argparse
+import ConfigParser
+from botocore.exceptions import ClientError
 
-if len(sys.argv[1:]) != 3:
-    print 'use: python generate_keys.py session_name role_arn output_format'
-    exit(1)
-else:
-    session_name = sys.argv[1]
-    role_arn = sys.argv[2]
-    output = sys.argv[3]
 
-sts_connection = boto3.client('sts')
+def get_credentials_for_role(role_arn, session_name):
+    sts = boto3.client('sts')
+    try:
+        response = sts.assume_role(RoleArn=role_arn, 
+                                   RoleSessionName=session_name)
+        return response['Credentials']
+    except ClientError as e:
+        sys.stderr.write('ERROR: %s\n' % e.response['Error']['Message'])
+        sys.exit(1)
 
-assumed_role_object = sts_connection.assume_role(
-    RoleArn=role_arn,
-    RoleSessionName=session_name
-)
 
-json_string_with_temp_credentials = '{'
-json_string_with_temp_credentials += '"sessionId":"' + assumed_role_object['Credentials']['AccessKeyId'] + '",'
-json_string_with_temp_credentials += '"sessionKey":"' + assumed_role_object['Credentials']['SecretAccessKey'] + '",'
-json_string_with_temp_credentials += '"sessionToken":"' + assumed_role_object['Credentials']['SessionToken'] + '"'
-json_string_with_temp_credentials += '}'
+def write_credentials(profile, credentials):
+    filename = os.path.expanduser('~/.aws/credentials')
+    dirname = os.path.dirname(filename)
 
-request_parameters = "?Action=getSigninToken"
-request_parameters += "&SessionDuration=43200"
-request_parameters += "&Session=" + urllib.quote_plus(json_string_with_temp_credentials)
-request_url = "https://signin.aws.amazon.com/federation" + request_parameters
-r = requests.get(request_url)
-signin_token = json.loads(r.text)
+    if not os.path.exists(dirname):
+        os.makedirs(dirname)
 
-request_parameters = "?Action=login" 
-request_parameters += "&Issuer=Instruqt" 
-request_parameters += "&Destination=" + urllib.quote_plus("https://console.aws.amazon.com/")
-request_parameters += "&SigninToken=" + signin_token["SigninToken"]
-request_url = "https://signin.aws.amazon.com/federation" + request_parameters
+    config = ConfigParser.ConfigParser()
+    config.read(filename)
+    if not config.has_section(profile):
+        config.add_section(profile)
+    config.set(profile, 'aws_access_key_id', credentials['AccessKeyId'])
+    config.set(profile, 'aws_secret_access_key', credentials['SecretAccessKey'])
+    config.set(profile, 'aws_session_token', credentials['SessionToken'])
+    with open(filename, 'w') as fp:
+        config.write(fp)
 
-parsed = {}
 
-parsed['access_key'] = assumed_role_object['Credentials']['AccessKeyId']
-parsed['secret_key'] = assumed_role_object['Credentials']['SecretAccessKey']
-parsed['session_token'] = assumed_role_object['Credentials']['SessionToken']
-parsed['console_access'] = request_url
+def generate_console_link(credentials):
+    session = json.dumps({'sessionId': credentials['AccessKeyId'],
+                          'sessionKey': credentials['SecretAccessKey'],
+                          'sessionToken': credentials['SessionToken']})
 
-if output == 'credentials':
-    print "[tmpinstruqt]"
-    print "aws_access_key_id = " + assumed_role_object['Credentials']['AccessKeyId']
-    print "aws_secret_access_key = " + assumed_role_object['Credentials']['SecretAccessKey']
-    print "aws_session_token = " + assumed_role_object['Credentials']['SessionToken']
+    r = requests.get("https://signin.aws.amazon.com/federation",
+                     params={'Action': 'getSigninToken',
+                             'SessionDuration': 43200,
+                             'Session': session})
+    signin_token = r.json()
 
-elif output == "link":
-    print request_url
+    console = requests.Request('GET',
+                              'https://signin.aws.amazon.com/federation',
+                              params={'Action': 'login',
+                                      'Issuer': 'Instruqt',
+                                      'Destination': 'https://console.aws.amazon.com/',
+                                      'SigninToken': signin_token['SigninToken']})
+    prepared_link = console.prepare()
+    return prepared_link.url
 
-else: 
-    print json.dumps(parsed, indent=4)
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='generate keys')
+    parser.add_argument("--output", "-o", required=False,
+                        dest="output", help="output format", metavar="STRING",
+                        default="json", choices=['link', 'json', 'write'])
+    parser.add_argument("--role-arn", "-r", required=True,
+                        dest="role_arn", help="to assume", metavar="STRING")
+    parser.add_argument("--session-name", "-s", required=True,
+                        dest="session_name", help="to use", metavar="STRING")
+
+    options = parser.parse_args()
+    credentials = get_credentials_for_role(options.role_arn, 
+                                           options.session_name)
+
+    if options.output == 'link':
+        print generate_console_link(credentials)
+    elif options.output == 'write':
+        write_credentials(options.session_name, credentials)
+    elif options.output == 'json':
+        print(json.dumps({'AccessKeyId': credentials['AccessKeyId'],
+                          'SecretAccessKey': credentials['SecretAccessKey'],
+                          'SessionToken': credentials['SessionToken'],
+                          'ConsoleMagicLink': generate_console_link(credentials)}))

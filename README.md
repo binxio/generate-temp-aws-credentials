@@ -176,60 +176,91 @@ pip install requests boto3
 Create a file `generate_keys.py` with the following source:
 
 ```python
-import urllib, json, requests, sys, boto3
+#!/usr/bin/env python
+import os
+import sys
+import boto3
+import json
+import requests
+import argparse
+import ConfigParser
+from botocore.exceptions import ClientError
 
-if len(sys.argv[1:]) != 3:
-    print 'use: python generate_keys.py session_name role_arn output_format'
-    exit(1)
-else:
-    session_name = sys.argv[1]
-    role_arn = sys.argv[2]
-    output = sys.argv[3]
 
-sts_connection = boto3.client('sts')
+def get_credentials_for_role(role_arn, session_name):
+    sts = boto3.client('sts')
+    try:
+        response = sts.assume_role(RoleArn=role_arn, 
+                                   RoleSessionName=session_name)
+        return response['Credentials']
+    except ClientError as e:
+        sys.stderr.write('ERROR: %s\n' % e.response['Error']['Message'])
+        sys.exit(1)
 
-assumed_role_object = sts_connection.assume_role(
-    RoleArn=role_arn,
-    RoleSessionName=session_name
-)
 
-json_string_with_temp_credentials = '{'
-json_string_with_temp_credentials += '"sessionId":"' + assumed_role_object['Credentials']['AccessKeyId'] + '",'
-json_string_with_temp_credentials += '"sessionKey":"' + assumed_role_object['Credentials']['SecretAccessKey'] + '",'
-json_string_with_temp_credentials += '"sessionToken":"' + assumed_role_object['Credentials']['SessionToken'] + '"'
-json_string_with_temp_credentials += '}'
+def write_credentials(profile, credentials):
+    filename = os.path.expanduser('~/.aws/credentials')
+    dirname = os.path.dirname(filename)
 
-request_parameters = "?Action=getSigninToken"
-request_parameters += "&SessionDuration=43200"
-request_parameters += "&Session=" + urllib.quote_plus(json_string_with_temp_credentials)
-request_url = "https://signin.aws.amazon.com/federation" + request_parameters
-r = requests.get(request_url)
-signin_token = json.loads(r.text)
+    if not os.path.exists(dirname):
+        os.makedirs(dirname)
 
-request_parameters = "?Action=login" 
-request_parameters += "&Issuer=Instruqt" 
-request_parameters += "&Destination=" + urllib.quote_plus("https://console.aws.amazon.com/")
-request_parameters += "&SigninToken=" + signin_token["SigninToken"]
-request_url = "https://signin.aws.amazon.com/federation" + request_parameters
+    config = ConfigParser.ConfigParser()
+    config.read(filename)
+    if not config.has_section(profile):
+        config.add_section(profile)
+    config.set(profile, 'aws_access_key_id', credentials['AccessKeyId'])
+    config.set(profile, 'aws_secret_access_key', credentials['SecretAccessKey'])
+    config.set(profile, 'aws_session_token', credentials['SessionToken'])
+    with open(filename, 'w') as fp:
+        config.write(fp)
 
-parsed = {}
 
-parsed['access_key'] = assumed_role_object['Credentials']['AccessKeyId']
-parsed['secret_key'] = assumed_role_object['Credentials']['SecretAccessKey']
-parsed['session_token'] = assumed_role_object['Credentials']['SessionToken']
-parsed['console_access'] = request_url
+def generate_console_link(credentials):
+    session = json.dumps({'sessionId': credentials['AccessKeyId'],
+                          'sessionKey': credentials['SecretAccessKey'],
+                          'sessionToken': credentials['SessionToken']})
 
-if output == 'credentials':
-    print "[tmpinstruqt]"
-    print "aws_access_key_id = " + assumed_role_object['Credentials']['AccessKeyId']
-    print "aws_secret_access_key = " + assumed_role_object['Credentials']['SecretAccessKey']
-    print "aws_session_token = " + assumed_role_object['Credentials']['SessionToken']
+    r = requests.get("https://signin.aws.amazon.com/federation",
+                     params={'Action': 'getSigninToken',
+                             'SessionDuration': 43200,
+                             'Session': session})
+    signin_token = r.json()
 
-elif output == "link":
-    print request_url
+    console = requests.Request('GET',
+                              'https://signin.aws.amazon.com/federation',
+                              params={'Action': 'login',
+                                      'Issuer': 'Instruqt',
+                                      'Destination': 'https://console.aws.amazon.com/',
+                                      'SigninToken': signin_token['SigninToken']})
+    prepared_link = console.prepare()
+    return prepared_link.url
 
-else: 
-    print json.dumps(parsed, indent=4)
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='generate keys')
+    parser.add_argument("--output", "-o", required=False,
+                        dest="output", help="output format", metavar="STRING",
+                        default="json", choices=['link', 'json', 'write'])
+    parser.add_argument("--role-arn", "-r", required=True,
+                        dest="role_arn", help="to assume", metavar="STRING")
+    parser.add_argument("--session-name", "-s", required=True,
+                        dest="session_name", help="to use", metavar="STRING")
+
+    options = parser.parse_args()
+    credentials = get_credentials_for_role(options.role_arn, 
+                                           options.session_name)
+
+    if options.output == 'link':
+        print generate_console_link(credentials)
+    elif options.output == 'write':
+        write_credentials(options.session_name, credentials)
+    elif options.output == 'json':
+        print(json.dumps({'AccessKeyId': credentials['AccessKeyId'],
+                          'SecretAccessKey': credentials['SecretAccessKey'],
+                          'SessionToken': credentials['SessionToken'],
+                          'ConsoleMagicLink': generate_console_link(credentials)}))
+
 ```
 
 generate_keys.py requires 3 parameters:
@@ -238,23 +269,24 @@ generate_keys.py requires 3 parameters:
 * **role_arn**. The role arn is part of the output of the terraform script. (Example: arn:aws:iam::AWS\_ACCOUNT\_ID:role/InstruqtS3Access). You can copy this from the output of terraform.
 * **output_format**. This could only contain: json | credentials | link
 
-generate_keys.py uses Boto (AWS SDK for Python). It will use environment variables for access keys. Copy the access\_key output from terraform and the decrypted secret\_key and replace the environment variables in the example below. 
+generate_keys.py uses Boto (AWS SDK for Python). It will use environment variables for access keys. Use the first example or copy the access\_key and role\_arn output from terraform, the decrypted secret\_key and replace the example variables in the second example. 
+
+```
+AWS_ACCESS_KEY_ID=$(terraform output access_key) \
+AWS_SECRET_ACCESS_KEY=$(terraform output secret_key | base64 --decode | keybase pgp decrypt) \
+python ./generate_keys.py --session-name identified@domain.ext \
+                          --role-arn $(terraform output role_arn) \
+                          --output json
+```
 
 ```
 AWS_ACCESS_KEY_ID=AKIA34K435KLR12KDT345 \
 AWS_SECRET_ACCESS_KEY=lk45hJSFkl35ADfsdDFtkl34fFADFhlktjrfaewr \
-python ./generate_keys.py martijn@binx.io arn:aws:iam::AWS_ACCOUNT_ID:role/InstruqtS3Access json
+python ./generate_keys.py --session-name identified@domain.ext \
+                          --role-arn arn:aws:iam::AWS_ACCOUNT_ID:role/InstruqtS3Access \
+                          --output json
 ```
-The output of this command should look similar to:
 
-```
-{
-    "access_key": "ASIDF45H4K53TLWQ3234", 
-    "secret_key": "4k2h4kl234lk23j42lk34j23lk4j23kl4j", 
-    "console_access": "https://signin.aws.amazon.com/federation?Action=login&Issuer=Instruqt&Destination=https%3A%2F%2Fconsole.aws.amazon.com%2F&SigninToken=k4j53kl45h3l4k5h3jl4h5234lk2j23k4j234...", 
-    "session_token": "lerthDFSDFwle2k34jlkLKJkjrthlewkjrKLDFthwlek..."
-}
-```
 
 If you get an error with at the end of the stack trace the message: "The security token included in the request is invalid." It's probably because you didn't replace the values of  AWS\_ACCESS\_KEY\_ID and AWS\_SECRET\_ACCESS\_KEY. 
 
@@ -270,9 +302,11 @@ Open a browser and copy the "console_access" magic link. You're automatically lo
 There are several ways to use the temporary credentials. To add the credentials once and easily use it in next commands, you can create a new profile in `~/.aws/credentials`. After the profile is added to credentials, you can use it with `--profile tmpinstruqt` in the AWS CLI.
 
 ```
-AWS_ACCESS_KEY_ID=AKIA34K435KLRET345 \
-AWS_SECRET_ACCESS_KEY=lk45hJSFkl35fLKHDetkl34fFADFhlktjrfaewr \
-python ./generate_keys.py martijn@binx.io arn:aws:iam::AWS_ACCOUNT_ID:role/InstruqtS3Access credentials
+AWS_ACCESS_KEY_ID=$(terraform output access_key) \
+AWS_SECRET_ACCESS_KEY=$(terraform output secret_key | base64 --decode | keybase pgp decrypt) \
+python ./generate_keys.py --session-name tmpinstruqt \
+                          --role-arn $(terraform output role_arn) \
+                          --output write
 [tmpinstruqt]
 aws_access_key_id = AKIA34K435KLRET345
 aws_secret_access_key = lk45hJSFasdfkl35fLKHDl34fFADFhlktjrfaewr
@@ -308,3 +342,5 @@ To clean up, just remove the temporary credentials from your `~/.aws/credentials
 You can download the source from github: https://github.com/binxio/generate-temp-aws-credentials
 
 Feel free to contact me if you have any questions. Your feedback is appreciated, and will be used to improve this blog post and future posts.
+
+NB. Big thanks to my colleague Mark van Holsteijn. The python code used in the first version was copied from [AWS Documentation](https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_providers_enable-console-custom-url.html). It wasn't clean that clean. So we refactored it to the script now used in the blog post. It also gave us inspiration for new blog posts, so stay tuned for updates and related stuff.
