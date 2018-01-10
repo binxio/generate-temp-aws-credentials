@@ -329,4 +329,4 @@ You can download the source from github: https://github.com/binxio/generate-temp
 
 Feel free to contact me if you have any questions. Your feedback is appreciated, and will be used to improve this blog post and future posts.
 
-NB. Big thanks to my colleague Mark van Holsteijn. The python code used in the first version was copied from [AWS Documentation](https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_providers_enable-console-custom-url.html). It wasn't clean that clean. So we refactored it to the script now used in the blog post. It also gave us inspiration for new blog posts, so stay tuned for updates and related stuff.
+NB. Big thanks to my colleague Mark van Holsteijn. The python code used in the first version was copied from [AWS Documentation](https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles_providers_enable-console-custom-url.html). It wasn't that clean. So we refactored it to the script now used in the blog post. It also gave us inspiration for new blog posts, so stay tuned for updates and related stuff.
