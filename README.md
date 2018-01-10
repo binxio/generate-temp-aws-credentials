@@ -10,7 +10,7 @@ For our product Instruqt, we're building challenges to learn AWS technology. Use
 * **Terraform**. You need to have installed Terraform.
 * **Python**. Ensure you have a recent python version with pip. On a mac I recommend this [setup](http://sourabhbajaj.com/mac-setup/Python/).
 * **AWS CLI**. Install the AWS CLI with pip. (`pip install awscli --upgrade --user`)
-* **Keybase**. Install and create a Keybase account ([https://keybase.io/](https://keybase.io/)
+* **Keybase**. Install and create a Keybase account ([https://keybase.io/](https://keybase.io/))
 
 ## Roles and Federation
 
@@ -152,7 +152,7 @@ output "secret_key" {
 }
 ```
 
-Deploy the stack using the following commands. Select one of the profiles configured in `~/.aws/credentials`.
+Deploy the stack using the following commands. Select one of the profiles configured in `~/.aws/credentials`. Keep the profile name and your keybase username ready, because the apply command will ask you to enter these values.
 
 ```
 terraform init
@@ -167,7 +167,7 @@ terraform output secret_key | base64 --decode | keybase pgp decrypt
 
 ## Run the python generate_keys.py
 
-First install dependencies with for example pip, using the next example.
+First install dependencies with for example pip, using the next example. When you get errors of missing dependencies, install those as well.
 
 ```
 pip install requests boto3
@@ -263,11 +263,11 @@ if __name__ == '__main__':
 
 ```
 
-generate_keys.py requires 3 parameters:
+The ./generate_keys.py script requires 3 parameters:
 
-* **session_name**. The session name is an unique ID of the user who is going to use the temporary credentials. (Example: martijn@binx.io)
-* **role_arn**. The role arn is part of the output of the terraform script. (Example: arn:aws:iam::AWS\_ACCOUNT\_ID:role/InstruqtS3Access). You can copy this from the output of terraform.
-* **output_format**. This could only contain: json | credentials | link
+* **--session-name**. The session name is an unique ID of the user who is going to use the temporary credentials. (Example: martijn@binx.io)
+* **--role-arn**. The role arn is part of the output of the terraform script. (Example: arn:aws:iam::AWS\_ACCOUNT\_ID:role/InstruqtS3Access). You can copy this from the output of terraform.
+* **--output**. This could only contain: json | write | link, default output is json.
 
 generate_keys.py uses Boto (AWS SDK for Python). It will use environment variables for access keys. Use the first example or copy the access\_key and role\_arn output from terraform, the decrypted secret\_key and replace the example variables in the second example. 
 
@@ -287,7 +287,6 @@ python ./generate_keys.py --session-name identified@domain.ext \
                           --output json
 ```
 
-
 If you get an error with at the end of the stack trace the message: "The security token included in the request is invalid." It's probably because you didn't replace the values of  AWS\_ACCESS\_KEY\_ID and AWS\_SECRET\_ACCESS\_KEY. 
 
 ## Use the generated temporary keys
@@ -299,24 +298,11 @@ Open a browser and copy the "console_access" magic link. You're automatically lo
 
 ### With the CLI
 
-There are several ways to use the temporary credentials. To add the credentials once and easily use it in next commands, you can create a new profile in `~/.aws/credentials`. After the profile is added to credentials, you can use it with `--profile tmpinstruqt` in the AWS CLI.
-
-```
-AWS_ACCESS_KEY_ID=$(terraform output access_key) \
-AWS_SECRET_ACCESS_KEY=$(terraform output secret_key | base64 --decode | keybase pgp decrypt) \
-python ./generate_keys.py --session-name tmpinstruqt \
-                          --role-arn $(terraform output role_arn) \
-                          --output write
-[tmpinstruqt]
-aws_access_key_id = AKIA34K435KLRET345
-aws_secret_access_key = lk45hJSFasdfkl35fLKHDl34fFADFhlktjrfaewr
-aws_session_token = 45j3lk44k23lk23lk423grgpp43wmSDmvmxcj34h5k3j4...
-```
+There are several ways to use the temporary credentials. To add the credentials once and easily use it in next commands, you create a new profile in `~/.aws/credentials`. With `--output write`, the section is directly written into the credentials file and ready to be used. 
 
 ```
 aws s3 ls --profile tmpinstruqt
 ```
-
 ### Programmatic access
 
 And you can of course use these credentials for programmatic access. This is not the recommended way of adding secrets in your code, but just for this example hard coded.
